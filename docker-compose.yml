@@ -1,0 +1,213 @@
+# =============================================================================
+# AREA - Base Docker Compose Configuration
+# =============================================================================
+# This is the BASE configuration containing all services with minimal,
+# environment-agnostic settings. This file should NOT be used alone.
+#
+# Usage:
+#   Development:  docker-compose up (auto-loads docker-compose.override.yml)
+#   Production:   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   Testing:      docker-compose -f docker-compose.yml -f docker-compose.test.yml up
+#
+# See: docs/DOCKER_COMPOSE.md for detailed documentation
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Database - PostgreSQL
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Cache & Message Broker - Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Backend API - Django
+  # ---------------------------------------------------------------------------
+  server:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=area_project.settings
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:6379/0
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./.env:/.env
+      - backend_static:/app/staticfiles
+      - backend_media:/app/mediafiles
+      - backend_logs:/app/logs
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker - Async Tasks
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=area_project.settings
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:6379/0
+      - SKIP_DJANGO_INIT=true
+    command: ["celery", "-A", "area_project", "worker", "--loglevel=info"]
+    depends_on:
+      server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat - Task Scheduler
+  # ---------------------------------------------------------------------------
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=area_project.settings
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:6379/0
+      - SKIP_DJANGO_INIT=true
+    command: ["celery", "-A", "area_project", "beat", "--loglevel=info", "--scheduler=django_celery_beat.schedulers:DatabaseScheduler"]
+    depends_on:
+      server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Flower - Celery Monitoring (optional)
+  # ---------------------------------------------------------------------------
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=area_project.settings
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:6379/0
+      - SKIP_DJANGO_INIT=true
+    command: ["celery", "-A", "area_project", "flower", "--port=5566"]
+    depends_on:
+      server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Mobile Client - Flutter APK Builder
+  # ---------------------------------------------------------------------------
+  client_mobile:
+    build:
+      context: ./mobile
+      dockerfile: Dockerfile
+    volumes:
+      - apk_shared:/shared
+    depends_on:
+      - server
+    networks:
+      - area-net
+
+  # ---------------------------------------------------------------------------
+  # Web Client - React Frontend
+  # ---------------------------------------------------------------------------
+  client_web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - apk_shared:/shared
+    depends_on:
+      - client_mobile
+      - server
+    networks:
+      - area-net
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  pgdata:
+    name: area_pgdata
+  redis_data:
+    name: area_redis_data
+  apk_shared:
+    name: area_apk_shared
+  backend_static:
+    name: area_backend_static
+  backend_media:
+    name: area_backend_media
+  backend_logs:
+    name: area_backend_logs
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  area-net:
+    name: area_network
+    driver: bridge

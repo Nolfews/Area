@@ -1,0 +1,23 @@
+# Development Dockerfile for React/Vite frontend
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Create public directory and symlink for APK
+RUN mkdir -p /app/public && \
+    ln -sf /shared/client.apk /app/public/client.apk
+
+# Expose Vite's default port
+EXPOSE 5173
+
+# Run development server with host binding for Docker
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

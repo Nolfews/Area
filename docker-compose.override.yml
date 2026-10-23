@@ -1,0 +1,144 @@
+# =============================================================================
+# AREA - Development Overrides
+# =============================================================================
+# This file is AUTOMATICALLY loaded when you run `docker-compose up`.
+# It contains development-specific configurations:
+#   - Port mappings for direct access
+#   - Container names for easier debugging
+#   - Hot-reload volumes
+#   - Vite dev server for frontend
+#
+# Usage:
+#   docker-compose up              # Loads base + override automatically
+#   docker-compose up -d           # Same, but detached
+#
+# Note: This file OVERRIDES services defined in docker-compose.yml
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Database - Development Overrides
+  # ---------------------------------------------------------------------------
+  db:
+    container_name: area_postgres
+    ports:
+      - "${DB_PORT}:5432"  # Expose for local tools (pgAdmin, DBeaver, etc.)
+    # Healthcheck inherited from base docker-compose.yml
+
+  # ---------------------------------------------------------------------------
+  # Redis - Development Overrides
+  # ---------------------------------------------------------------------------
+  redis:
+    container_name: area_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"  # Expose for redis-cli or GUI tools
+    # Healthcheck inherited from base docker-compose.yml
+
+  # ---------------------------------------------------------------------------
+  # Backend API - Development Overrides
+  # ---------------------------------------------------------------------------
+  server:
+    container_name: area_server
+    user: "root"  # Run as root in dev to avoid permission issues with mounted volumes
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"  # Expose API for direct access
+    volumes:
+      - ./backend:/app:z  # HOT RELOAD: Mount source code (z for SELinux)
+      - backend_static:/app/staticfiles  # Keep static files in volume
+      - backend_media:/app/mediafiles    # Keep media files in volume
+      - ./backend/logs:/app/logs:z       # Mount logs with SELinux label
+    # Use command instead of entrypoint to preserve entrypoint.sh initialization
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8080"]
+    # Healthcheck inherited from Dockerfile (uses curl on /health/ endpoint)
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker - Development Overrides
+  # ---------------------------------------------------------------------------
+  worker:
+    container_name: area_worker
+    user: "root"  # Run as root in dev to avoid permission issues
+    volumes:
+      - ./backend:/app:z  # HOT RELOAD: Mount source code (z for SELinux)
+      - ./backend/logs:/app/logs:z  # Mount logs with SELinux label
+    # Use command instead of entrypoint to preserve entrypoint.sh initialization
+    command: ["celery", "-A", "area_project", "worker", "--loglevel=info", "--pool=solo"]
+    # Healthcheck disabled in dev for faster startup
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat - Development Overrides
+  # ---------------------------------------------------------------------------
+  beat:
+    container_name: area_beat
+    user: "root"  # Run as root in dev to avoid permission issues
+    volumes:
+      - ./backend:/app:z  # HOT RELOAD: Mount source code (z for SELinux)
+      - ./backend/logs:/app/logs:z  # Mount logs with SELinux label
+    # Use command instead of entrypoint to preserve entrypoint.sh initialization
+    command: ["celery", "-A", "area_project", "beat", "--loglevel=info", "--scheduler=django_celery_beat.schedulers:DatabaseScheduler"]
+    # Healthcheck disabled in dev for faster startup
+
+  # ---------------------------------------------------------------------------
+  # Flower - Development Overrides
+  # ---------------------------------------------------------------------------
+  flower:
+    container_name: area_flower
+    user: "root"  # Run as root in dev to avoid permission issues
+    ports:
+      - "${FLOWER_PORT:-5566}:5566"  # Expose Celery monitoring UI
+    volumes:
+      - ./backend:/app:z  # HOT RELOAD: Mount source code (z for SELinux)
+    # Use command instead of entrypoint to preserve entrypoint.sh initialization
+    command: ["celery", "-A", "area_project", "flower", "--port=5566"]
+    # Healthcheck disabled in dev for faster startup
+
+  # ---------------------------------------------------------------------------
+  # Mobile Client - Development Overrides
+  # ---------------------------------------------------------------------------
+  client_mobile:
+    container_name: area_client_mobile
+    volumes:
+      - apk_shared:/shared
+      - ./mobile:/app:z  # HOT RELOAD: Mount source code (z for SELinux)
+
+  # ---------------------------------------------------------------------------
+  # Web Client - Development with Vite Hot Reload
+  # ---------------------------------------------------------------------------
+  # OVERRIDE: Replace production nginx with Vite dev server
+  client_web:
+    container_name: area_client_web_dev
+    user: "root"  # Run as root in dev to avoid permission issues with mounted volumes
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /app/public
+        ln -sf /shared/client.apk /app/public/client.apk
+        npm run dev -- --host 0.0.0.0
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"  # Vite dev server port
+    volumes:
+      - ./frontend:/app:z         # HOT RELOAD: Mount source code (z for SELinux)
+      - /app/node_modules         # Preserve node_modules from image
+      - apk_shared:/shared        # APK download
+    env_file:
+      - .env                      # Mount root .env for VITE_* access
+    environment:
+      - VITE_API_URL=http://localhost:${BACKEND_PORT:-8080}
+      - CHOKIDAR_USEPOLLING=true  # Better file watching in Docker
+    # Healthcheck disabled in dev for faster startup
+
+# =============================================================================
+# Volumes (inherited from base)
+# =============================================================================
+volumes:
+  backend_static:
+    name: area_backend_static
+  backend_media:
+    name: area_backend_media
+  backend_logs:
+    name: area_backend_logs
+  apk_shared:
+    name: area_apk_shared
